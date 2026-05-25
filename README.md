@@ -1,146 +1,240 @@
 # creative-engine-c
 
-> Dynamical systems for creative processes — Lorenz attractors, regime detection, and signal quality metrics in pure C
+Dynamical systems for creative processes — Lorenz attractors, regime detection, Kuramoto synchronization, and signal quality metrics in pure C99.
 
-Part of the [SuperInstance](https://github.com/SuperInstance) music constraint theory ecosystem. Provides the low-level C implementation of the creative dynamics engine: chaotic attractors that drive generative musical processes, regime detection (fixed-point / periodic / chaotic), and signal quality metrics for evaluating creative output.
+Part of the [SuperInstance](https://github.com/SuperInstance) ecosystem. The Lorenz system acts as a chaotic driver for generative musical processes. Regime detection (fixed-point / periodic / chaotic) determines the character of creative output. Signal quality metrics evaluate whether the current state produces viable material. A creative thermostat adaptively tunes exploration rate.
 
-## What It Does
-
-Creative output isn't random — it emerges from dynamical systems operating at the edge of chaos. This engine implements the Lorenz system as its core dynamical driver, integrating the attractor in real-time and classifying the system's regime. When the system is in a **chaotic regime**, it generates rich, unpredictable musical material. When it's **periodic**, patterns repeat. When at a **fixed point**, output stabilizes. The creative sweet spot is the transition between regimes.
-
-The engine also implements **Kuramoto order parameters** for measuring synchronization between coupled oscillators (useful for coordinating multiple musical voices), **soft-snap** operations for smoothly pulling parameters toward targets, and **signal quality metrics** that evaluate whether the current dynamical state is producing viable creative output.
-
-A Rust port lives at [creative-engine-rust](https://github.com/SuperInstance/creative-engine-rust).
-
-## Key Features
-
-- **Lorenz system integration** — 4th-order Runge-Kutta integration of the Lorenz attractor
-- **Regime detection** — classifies dynamics as fixed-point, periodic, or chaotic
-- **Soft snap** — exponential pull toward target values without discontinuities
-- **Kuramoto order parameter** — measures oscillator synchronization in `[0, 1]`
-- **Signal quality metrics** — evaluates creative viability of dynamical state
-- **Coupling** — couples multiple dynamical systems for multi-voice coordination
-- **Zero dependencies** — pure C, no external libraries needed
+Zero dependencies — only `<math.h>` and `<stdlib.h>`.
 
 ## Building
 
 ```bash
-git clone https://github.com/SuperInstance/creative-engine-c.git
-cd creative-engine-c
-make                # Build static library + test binary
-make test           # Build and run tests
-make clean          # Clean build artifacts
+make              # build static library + test binary
+make test         # build and run tests
+make clean
 ```
 
-### Prerequisites
+Requires a C99 compiler (gcc, clang) and make.
 
-- C99-compatible compiler (gcc, clang)
-- make
+## Lorenz System
 
-## API Reference
+4th-order Runge-Kutta integration of the Lorenz attractor:
 
-### Lorenz Integration
+```
+dx/dt = σ(y − x)
+dy/dt = x(ρ − z) − y
+dz/dt = xy − βz
+```
 
 ```c
 #include "creative_engine.h"
 
-// Initialize Lorenz state with classic parameters
-LorenzState state = {
-    .x = 0.1, .y = 0.0, .z = 0.0,
-    .sigma = 10.0, .rho = 28.0, .beta = 8.0/3.0
-};
+// State and parameters are separate structs
+lorenz_state_t state = { .x = 0.1, .y = 0.0, .z = 0.0 };
+lorenz_params_t params = LORENZ_DEFAULT;  // σ=10, ρ=28, β=8/3
 
-// Integrate one step (4th-order Runge-Kutta)
-double dt = 0.01;
-lorenz_step(&state, dt);
+// Single RK4 step
+state = lorenz_step(state, params, 0.01);
+printf("x=%.4f y=%.4f z=%.4f\n", state.x, state.y, state.z);
 
-// Read current state
-printf("x=%f y=%f z=%f\n", state.x, state.y, state.z);
+// Integrate a full trajectory
+#define N 10000
+lorenz_state_t trajectory[N + 1];
+trajectory[0] = (lorenz_state_t){ .x = 1.0, .y = 1.0, .z = 1.0 };
+lorenz_integrate(trajectory[0], params, 0.01, N, trajectory);
+// trajectory[i] contains state at t = i * 0.01
 ```
 
-### Regime Detection
+`lorenz_step` returns the new state (value, not pointer) — the original is not modified.
+
+## Regime Detection
+
+Classifies dynamics from the largest Lyapunov exponent ρ:
+
+| ρ | Regime | Creative behavior |
+|---|---|---|
+| ρ < −0.01 | `REGIME_FIXED_POINT` | Output stabilizes |
+| −0.01 ≤ ρ ≤ 0.01 | `REGIME_PERIODIC` | Repeating patterns |
+| ρ > 0.01 | `REGIME_CHAOTIC` | Rich, unpredictable material |
 
 ```c
-// Detect current regime from trajectory history
-Regime regime = detect_regime(trajectory, trajectory_length);
-
-switch (regime) {
-    case REGIME_FIXED_POINT:  // System settled
-    case REGIME_PERIODIC:     // Limit cycle
-    case REGIME_CHAOTIC:      // Strange attractor
-}
+double lyapunov_exp = compute_lyapunov(trajectory, N);  // your computation
+regime_t regime = regime_from_rho(lyapunov_exp);
 ```
 
-### Soft Snap
+## Soft Snap
+
+Continuous snap function that interpolates between rounding and identity:
+
+```
+C(x, ε) = (1 − ε) · round(x) + ε · x
+```
+
+- ε → 0: hard snap to nearest integer
+- ε → 1: pass-through (no snapping)
+- ε between: smooth blend
 
 ```c
-// Smoothly pull a value toward a target
-double current = 0.3;
-double target = 1.0;
-double strength = 0.1;  // pull rate
-double snapped = soft_snap(current, target, strength);
+double x = 2.7;
+soft_snap(x, 0.0);  // → 3.0  (hard round)
+soft_snap(x, 0.5);  // → 2.85
+soft_snap(x, 1.0);  // → 2.7  (identity)
 ```
 
-### Kuramoto Order Parameter
+## Optimal Epsilon
+
+Computes the ideal exploration rate for a given regime and expertise level (0 = novice, 1 = expert):
 
 ```c
-// Measure synchronization of N oscillators
-double phases[] = {0.0, 1.2, 2.5, 3.8, 5.1};
-double order = kuramoto_order_parameter(phases, 5);
-// order ≈ 1.0 → fully synchronized
-// order ≈ 0.0 → fully desynchronized
+double eps = optimal_epsilon(REGIME_CHAOTIC, 0.5);
+// Base rates: fixed-point=0.1, periodic=0.3, chaotic=0.5
+// Higher expertise → lower ε (more precision, less exploration)
 ```
 
-### Signal Quality
+## Sigmoid
 
 ```c
-// Evaluate creative viability
-double quality = signal_quality(&state, history, history_length);
-// Returns value in [0.0, 1.0]
+double y = sigmoid(2.0);              // 1 / (1 + e⁻ˣ)
+double y = sigmoid_steep(2.0, 5.0);   // 1 / (1 + e⁻ᵏˣ), k controls steepness
 ```
 
-### Coupling
+## Kuramoto Order Parameter
+
+Measures synchronization of N coupled oscillators from their phases:
+
+```
+r = |1/N · Σ exp(i·θⱼ)|
+```
+
+- r ≈ 1.0: fully synchronized
+- r ≈ 0.0: fully desynchronized
 
 ```c
-// Couple two Lorenz systems
-LorenzState a = lorenz_init(0.1, 0.0, 0.0);
-LorenzState b = lorenz_init(-0.1, 0.0, 0.0);
-double coupling_strength = 0.05;
+double phases[] = { 0.0, 0.1, 0.05, 6.2, 0.08 };
+double r = kuramoto_order(phases, 5);
+// r ≈ 0.85 → mostly synchronized
 
-// One coupled step
-lorenz_step_coupled(&a, &b, coupling_strength, dt);
+double spread[] = { 0.0, 1.57, 3.14, 4.71, 6.28 };
+double r2 = kuramoto_order(spread, 5);
+// r2 ≈ 0.0 → uniformly spread
 ```
 
-## Architecture
+## Signal Quality Metrics
 
+Three metrics for evaluating creative output quality:
+
+```c
+double signal[] = { 1.0, 1.5, 2.1, 2.8, 3.3, 3.9, 4.5 };
+
+// Novelty: mean absolute difference of consecutive values
+double nov = signal_novelty(signal, 7);
+// Higher → more variation between samples
+
+// Coherence: 1 / (1 + var(differences))
+double coh = signal_coherence(signal, 7);
+// Higher → smoother evolution (low variance in step sizes)
+
+// Quality: normalized_novelty × coherence, clamped to [0, 1]
+double q = signal_quality(signal, 7);
+// Balances novelty and coherence — high quality needs both
 ```
-creative_engine.c   # Full implementation
-creative_engine.h   # Public API header
-Makefile            # Build system
-tests/
-  test_engine.c     # Test suite
+
+Quality = 0 means either no variation (stuck) or chaotic noise. Quality ≈ 1 means smooth, evolving output.
+
+## Creative Network
+
+Hierarchical network of coupled nodes. Each layer connects to the next with weighted coupling, and weaker feedback flows backward.
+
+```c
+int layers[] = { 4, 8, 4, 2 };  // 4 layers: 4→8→4→2 nodes
+creative_network_t net = network_create(layers, 4);
+
+// Initialize activations for all 18 nodes
+int total = 4 + 8 + 4 + 2;
+double activations[18] = { /* initial values */ };
+
+// One coupling step: each node updates based on weighted neighbors
+network_step(&net, activations);
+// activations[] is modified in-place
 ```
 
-### Core Types
+Coupling weights: forward = `1/n_next_layer`, backward = `0.5 × forward`.
 
-| Type | Description |
+## Creative Thermostat
+
+Adapts exploration rate (epsilon) based on measured quality vs. target:
+
+```c
+thermostat_t t = thermostat_create(
+    0.7,    // target quality
+    0.05    // learning rate
+);
+
+// Each frame/step:
+double quality = signal_quality(sig, sig_len);
+double eps = thermostat_update(&t, quality);
+// quality < target → increase ε (more exploration)
+// quality > target → decrease ε (more exploitation)
+// ε clamped to [min_eps=0.01, max_eps=0.99]
+```
+
+## Types
+
+```c
+typedef struct {
+    double x, y, z;
+} lorenz_state_t;
+
+typedef struct {
+    double sigma, rho, beta;
+} lorenz_params_t;
+
+typedef enum {
+    REGIME_FIXED_POINT = 0,
+    REGIME_PERIODIC    = 1,
+    REGIME_CHAOTIC     = 2,
+    REGIME_UNKNOWN     = 3
+} regime_t;
+
+typedef struct {
+    int    n_layers;
+    int    nodes_per_layer[8];         // max 8 layers
+    double coupling[64][64];           // max 64 nodes total
+} creative_network_t;
+
+typedef struct {
+    double epsilon;        // current exploration rate
+    double target;         // target quality
+    double learning_rate;  // adaptation speed
+    double min_eps, max_eps;
+} thermostat_t;
+```
+
+## API Summary
+
+| Function | Signature |
 |---|---|
-| `LorenzState` | 3D state vector + Lorenz parameters (σ, ρ, β) |
-| `Regime` | Enum: `REGIME_FIXED_POINT`, `REGIME_PERIODIC`, `REGIME_CHAOTIC` |
+| `lorenz_step` | `lorenz_state_t lorenz_step(lorenz_state_t s, lorenz_params_t p, double dt)` |
+| `lorenz_integrate` | `void lorenz_integrate(lorenz_state_t s0, lorenz_params_t p, double dt, size_t n, lorenz_state_t *out)` |
+| `regime_from_rho` | `regime_t regime_from_rho(double rho)` |
+| `optimal_epsilon` | `double optimal_epsilon(regime_t regime, double expertise)` |
+| `soft_snap` | `double soft_snap(double x, double epsilon)` |
+| `sigmoid` | `double sigmoid(double x)` |
+| `sigmoid_steep` | `double sigmoid_steep(double x, double k)` |
+| `kuramoto_order` | `double kuramoto_order(const double *phases, size_t n)` |
+| `signal_novelty` | `double signal_novelty(const double *sig, size_t n)` |
+| `signal_coherence` | `double signal_coherence(const double *sig, size_t n)` |
+| `signal_quality` | `double signal_quality(const double *sig, size_t n)` |
+| `network_create` | `creative_network_t network_create(const int *layer_sizes, int n_layers)` |
+| `network_step` | `void network_step(creative_network_t *net, double *activations)` |
+| `thermostat_create` | `thermostat_t thermostat_create(double target_quality, double learning_rate)` |
+| `thermostat_update` | `double thermostat_update(thermostat_t *t, double measured_quality)` |
 
-## Testing
+## Related
 
-```bash
-make test   # Build and run all tests
-```
-
-## Related Repos
-
-- [**creative-engine-rust**](https://github.com/SuperInstance/creative-engine-rust) — Rust port of this engine
-- [**flux-ffi**](https://github.com/SuperInstance/flux-ffi) — FFI bindings (Rust ↔ C) for shared backend
-- [**superinstance-live**](https://github.com/SuperInstance/superinstance-live) — Live session controller using creative dynamics
-- [**constraint-toolkit**](https://github.com/SuperInstance/constraint-toolkit) — Constraint satisfaction engine
-- [**flux-genome**](https://github.com/SuperInstance/flux-genome) — Genetic evolution of musical genomes
+- [creative-engine-rust](https://github.com/SuperInstance/creative-engine-rust) — Rust port
+- [superinstance-live](https://github.com/SuperInstance/superinstance-live) — Live session controller
+- [flux-genome](https://github.com/SuperInstance/flux-genome) — Genetic evolution of musical genomes
 
 ## License
 
